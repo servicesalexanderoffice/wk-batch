@@ -29,6 +29,7 @@ jobs:
       - run: node runner.js
         env:
           QUERIES_JSON: ${{ inputs.queries }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
       - uses: actions/upload-artifact@v4
         with:
           name: results
