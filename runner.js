@@ -25,10 +25,17 @@ async function getCtx() {
   if (ctx) return ctx;
   browser = await pw.webkit.launch({ headless: true, ...proxyOpt() });
   ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  // Lean mode (2026-07-31): runner traffic transits the residential proxy and
+  // bills real GB. Abort heavy subresources AND every third-party host —
+  // startpage.com's own document/scripts/xhr must pass (blocking its scripts
+  // triggers the challenge wall, verified on the Fly fleet).
   await ctx.route('**/*', (route) => {
     const t = route.request().resourceType();
     if (['image', 'media', 'font', 'stylesheet'].includes(t)) return route.abort();
-    route.continue();
+    let host = '';
+    try { host = new URL(route.request().url()).hostname; } catch {}
+    if (t === 'document' || /(^|\.)startpage\.com$/.test(host) || /(^|\.)duckduckgo\.com$/.test(host)) return route.continue();
+    return route.abort();
   });
   return ctx;
 }
