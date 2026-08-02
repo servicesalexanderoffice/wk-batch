@@ -11,12 +11,29 @@ const pw = require('playwright');
 const queries = JSON.parse(process.env.QUERIES_JSON || '[]');
 const GAP_MS = 3000;
 
+// Sticky exit per run (2026-08-02): the runner used a bare rotating proxy, so
+// every query got a fresh exit IP against one cold context — clearance never
+// held, the challenge re-walled, and this account's runs fell back to DDG far
+// more than the others (observed: reefhausstudio-prog came back ddg-heavy).
+// The relay-wk fleet fixed the identical problem by pinning ONE exit per boot
+// so clearance earned on the first query holds for the rest (~90% ok vs cold).
+// Pin one session for the whole run; the provider holds the IP up to 120 min.
+// Disable with STICKY=0. randomBytes avoids a session collision across the
+// parallel runs sharing the same proxy creds.
+const SESSION_ID = require('crypto').randomBytes(4).toString('hex');
+
 function proxyOpt() {
   const raw = String(process.env.PROXY_URL || '').trim();
   if (!raw) return {};
   try {
     const u = new URL(raw);
-    return { proxy: { server: `${u.protocol}//${u.host}`, username: decodeURIComponent(u.username), password: decodeURIComponent(u.password) } };
+    let username = decodeURIComponent(u.username), password = decodeURIComponent(u.password);
+    if (process.env.STICKY !== '0') {
+      // Evomi pins via password params; DataImpulse via username suffix.
+      if (/evomi/i.test(u.hostname)) password += `_session-${SESSION_ID}_lifetime-120`;
+      else if (/dataimpulse/i.test(u.hostname)) username += `;sessid.${SESSION_ID};sessttl.120`;
+    }
+    return { proxy: { server: `${u.protocol}//${u.host}`, username, password } };
   } catch { return {}; }
 }
 
