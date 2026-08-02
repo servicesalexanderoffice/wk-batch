@@ -20,18 +20,18 @@ const GAP_MS = 3000;
 // Azure IP directly, those runs return real Google (Startpage) for $0 proxy
 // cost. Falls back to WebKit if camoufox-js isn't installed.
 const USE_CAMOUFOX = process.env.BROWSER === 'camoufox';
-let camoufoxLaunchOptions = null;
+let Camoufox = null;
 if (USE_CAMOUFOX) {
-  try { camoufoxLaunchOptions = require('camoufox-js').launchOptions; }
+  try { Camoufox = require('camoufox-js').Camoufox; }
   catch { console.error('BROWSER=camoufox set but camoufox-js not installed — using WebKit'); }
 }
+// Returns a Playwright Browser. For Camoufox we use the high-level Camoufox()
+// wrapper with headless:'virtual' — it manages the Xvfb virtual display and the
+// env Camoufox needs itself (the low-level launchOptions+firefox.launch path
+// segfaulted on the GH runners; the wrapper is camoufox-js's primary API).
 async function launchBrowser(proxyOptions) {
-  if (USE_CAMOUFOX && camoufoxLaunchOptions) {
-    // Camoufox segfaults in true-headless on the Ubuntu runners (verified: exit
-    // 139 on launch), so it runs headful under an Xvfb virtual display — the
-    // workflow wraps this process in `xvfb-run` for the camoufox engine.
-    const opts = await camoufoxLaunchOptions({ headless: false, geoip: !!proxyOptions.proxy, ...(proxyOptions.proxy ? { proxy: proxyOptions.proxy } : {}) });
-    return pw.firefox.launch(opts);
+  if (USE_CAMOUFOX && Camoufox) {
+    return Camoufox({ headless: 'virtual', geoip: !!proxyOptions.proxy, ...(proxyOptions.proxy ? { proxy: proxyOptions.proxy } : {}) });
   }
   return pw.webkit.launch({ headless: true, ...proxyOptions });
 }
@@ -65,8 +65,12 @@ function proxyOpt() {
 let browser = null, ctx = null;
 async function getCtx() {
   if (ctx) return ctx;
-  browser = await launchBrowser(proxyOpt());
-  ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const b = await launchBrowser(proxyOpt());
+  // WebKit returns a Browser (→ newContext); the Camoufox() wrapper may return
+  // a Browser or an already-open persistent context. Use newContext if present,
+  // otherwise treat the returned object as the context.
+  if (typeof b.newContext === 'function') { browser = b; ctx = await b.newContext({ viewport: { width: 1280, height: 900 } }); }
+  else { browser = b.browser ? b.browser() : b; ctx = b; }
   // Lean mode (2026-07-31): runner traffic transits the residential proxy and
   // bills real GB. Abort heavy subresources AND every third-party host —
   // startpage.com's own document/scripts/xhr must pass (blocking its scripts

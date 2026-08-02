@@ -59,9 +59,10 @@ jobs:
           QUERIES_JSON: ${{ inputs.queries }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
           BROWSER: ${{ inputs.engine }}
-      - name: Run (camoufox under Xvfb)
+      - name: Run (camoufox)
         if: inputs.engine == 'camoufox'
-        run: xvfb-run -a node runner.js
+        # headless:'virtual' in the runner starts its own Xvfb, so no wrapper.
+        run: node runner.js
         env:
           QUERIES_JSON: ${{ inputs.queries }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
