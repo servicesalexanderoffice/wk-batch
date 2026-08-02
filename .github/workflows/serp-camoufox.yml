@@ -1,0 +1,46 @@
+name: batch-camoufox
+# Isolated Camoufox path (2026-08-02): Camoufox segfaults on the bare GH runner
+# (probable seccomp kill of its C++ fingerprint syscalls) but runs fine on the
+# RackNerd Debian 12 box. This job runs inside a Debian bookworm container (same
+# OS as RackNerd) with seccomp unconfined to replicate that environment. Kept
+# separate from serp.yml so the WebKit pump path is never touched.
+on:
+  workflow_dispatch:
+    inputs:
+      queries:
+        description: JSON array of query strings
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: batch-camoufox-${{ github.run_id }}
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    container:
+      image: node:20-bookworm
+      options: --security-opt seccomp=unconfined
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache camoufox browser
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/camoufox
+          key: camoufox-bookworm-1
+      - run: npm install --no-audit --no-fund
+      - name: Install Camoufox + deps
+        run: |
+          npx playwright install-deps firefox
+          apt-get install -y xvfb
+          npx camoufox-js fetch
+      - run: node runner.js
+        env:
+          QUERIES_JSON: ${{ inputs.queries }}
+          BROWSER: camoufox
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results
+          path: results.json
+          retention-days: 1
