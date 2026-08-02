@@ -17,7 +17,10 @@ concurrency:
   group: batch-${{ github.run_id }}
 jobs:
   run:
-    runs-on: ubuntu-latest
+    # Camoufox's Firefox build segfaults on ubuntu-latest (24.04/noble, glibc
+    # 2.39); it launches cleanly on the older 22.04 image. WebKit stays on
+    # latest where the pump already runs it.
+    runs-on: ${{ inputs.engine == 'camoufox' && 'ubuntu-22.04' || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
