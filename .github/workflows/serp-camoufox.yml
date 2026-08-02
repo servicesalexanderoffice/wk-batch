@@ -31,14 +31,20 @@ jobs:
           key: camoufox-bookworm-1
       - run: npm install --no-audit --no-fund
       - name: Install Camoufox + deps
+        # Broad dep set (all browsers) + build tools, matching the RackNerd box
+        # where headless Camoufox works — narrow `install-deps firefox` alone
+        # segfaulted. xvfb kept in case the CAMOUFOX_HEADLESS=virtual fallback
+        # is needed.
         run: |
-          npx playwright install-deps firefox
-          apt-get install -y xvfb
+          apt-get update
+          npx playwright install-deps
+          apt-get install -y xvfb build-essential
           npx camoufox-js fetch
       - run: node runner.js
         env:
           QUERIES_JSON: ${{ inputs.queries }}
           BROWSER: camoufox
+          DEBUG: camoufox*
       - uses: actions/upload-artifact@v4
         with:
           name: results

@@ -31,7 +31,10 @@ if (USE_CAMOUFOX) {
 // segfaulted on the GH runners; the wrapper is camoufox-js's primary API).
 async function launchBrowser(proxyOptions) {
   if (USE_CAMOUFOX && Camoufox) {
-    return Camoufox({ headless: 'virtual', geoip: !!proxyOptions.proxy, ...(proxyOptions.proxy ? { proxy: proxyOptions.proxy } : {}) });
+    // headless:true matches the proven RackNerd config (Debian 12, broad
+    // playwright deps). CAMOUFOX_HEADLESS=virtual switches to the Xvfb path.
+    const headless = process.env.CAMOUFOX_HEADLESS === 'virtual' ? 'virtual' : true;
+    return Camoufox({ headless, geoip: !!proxyOptions.proxy, ...(proxyOptions.proxy ? { proxy: proxyOptions.proxy } : {}) });
   }
   return pw.webkit.launch({ headless: true, ...proxyOptions });
 }
