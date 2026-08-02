@@ -27,7 +27,10 @@ if (USE_CAMOUFOX) {
 }
 async function launchBrowser(proxyOptions) {
   if (USE_CAMOUFOX && camoufoxLaunchOptions) {
-    const opts = await camoufoxLaunchOptions({ headless: true, geoip: !!proxyOptions.proxy, ...(proxyOptions.proxy ? { proxy: proxyOptions.proxy } : {}) });
+    // Camoufox segfaults in true-headless on the Ubuntu runners (verified: exit
+    // 139 on launch), so it runs headful under an Xvfb virtual display — the
+    // workflow wraps this process in `xvfb-run` for the camoufox engine.
+    const opts = await camoufoxLaunchOptions({ headless: false, geoip: !!proxyOptions.proxy, ...(proxyOptions.proxy ? { proxy: proxyOptions.proxy } : {}) });
     return pw.firefox.launch(opts);
   }
   return pw.webkit.launch({ headless: true, ...proxyOptions });
