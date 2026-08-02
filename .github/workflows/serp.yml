@@ -6,6 +6,11 @@ on:
         description: JSON array of query strings
         required: true
         type: string
+      engine:
+        description: browser engine (webkit | camoufox)
+        required: false
+        default: webkit
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -20,16 +25,29 @@ jobs:
         with:
           node-version: 20
       - name: Cache playwright browsers
+        if: inputs.engine != 'camoufox'
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: pw-webkit-${{ runner.os }}-1
+      - name: Cache camoufox browser
+        if: inputs.engine == 'camoufox'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/camoufox
+          key: camoufox-${{ runner.os }}-1
       - run: npm install --no-audit --no-fund
-      - run: npx playwright install --with-deps webkit
+      - name: Install WebKit
+        if: inputs.engine != 'camoufox'
+        run: npx playwright install --with-deps webkit
+      - name: Install Camoufox
+        if: inputs.engine == 'camoufox'
+        run: npx camoufox-js fetch
       - run: node runner.js
         env:
           QUERIES_JSON: ${{ inputs.queries }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
+          BROWSER: ${{ inputs.engine }}
       - uses: actions/upload-artifact@v4
         with:
           name: results
