@@ -42,7 +42,12 @@ jobs:
         run: npx playwright install --with-deps webkit
       - name: Install Camoufox
         if: inputs.engine == 'camoufox'
-        run: npx camoufox-js fetch
+        # Camoufox is a Firefox fork; it needs Firefox's system libraries or it
+        # segfaults on launch (exit 139). `npx camoufox-js fetch` downloads only
+        # the browser, so pull the shared libs via Playwright's Firefox deps.
+        run: |
+          npx playwright install-deps firefox
+          npx camoufox-js fetch
       - run: node runner.js
         env:
           QUERIES_JSON: ${{ inputs.queries }}
