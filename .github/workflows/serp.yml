@@ -42,13 +42,21 @@ jobs:
       - run: npm install --no-audit --no-fund
       - name: Install WebKit
         if: inputs.engine != 'camoufox'
-        run: npx playwright install --with-deps webkit
+        # dl.google.com's chrome apt repo periodically serves mismatched
+        # metadata (Hash Sum mismatch); playwright's apt-get update then exits
+        # 100 and kills the run (fleet-wide 2026-09-09). We install nothing
+        # from the third-party sources — drop the known-flaky ones first.
+        # (Targeted rm only: ubuntu.sources in the same dir IS the main repo.)
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome* /etc/apt/sources.list.d/microsoft-prod*
+          npx playwright install --with-deps webkit
       - name: Install Camoufox
         if: inputs.engine == 'camoufox'
         # Camoufox is a Firefox fork; it needs Firefox's system libraries (via
         # Playwright's deps) AND runs headful under Xvfb — true-headless
         # segfaults on the Ubuntu runners (exit 139 on launch).
         run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome* /etc/apt/sources.list.d/microsoft-prod*
           npx playwright install-deps firefox
           sudo apt-get install -y xvfb
           npx camoufox-js fetch
