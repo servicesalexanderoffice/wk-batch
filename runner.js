@@ -2,9 +2,9 @@
 // array of query strings), fetches each from Startpage with one persistent
 // WebKit browser (through PROXY_URL when set — Startpage blocks Azure/GH
 // egress IPs outright, so the residential proxy provides the IP while GH
-// provides free compute), falling back to DDG's html endpoint, then Bing direct
-// (both the Bing index, labeled source:"ddg" / "bing" so the ingester never
-// mistakes either for Google truth).
+// provides free compute), falling back to DDG's html endpoint (Bing index,
+// labeled source:"ddg" so the ingester never mistakes it for Google truth):
+// a plain fetch first, then the same page in a proxy-less WebKit.
 // Writes results.json: [{query, source, results:[{title,url,snippet}]}...].
 const fs = require('fs');
 const pw = require('playwright');
@@ -163,29 +163,44 @@ async function fetchDdg(query) {
   }
 }
 
-// Bing direct. Result hrefs are bing.com/ck/a redirects, so the row's url is the <cite> text (the server's own
-// parseBing reads the same field; normalizeDomain drops the "› crumb").
-let ddgMisses = 0;
-async function fetchBing(query) {
+// DDG through a real browser, no proxy (class 79, 2026-11-16). Since 11/15 20:00Z DDG answers 202 (challenge page)
+// to every plain fetch from a runner IP, html and lite, GET and POST; the same page loaded in WebKit from the same
+// runner returns results. Its own browser so it never rides PROXY_URL (the proxy bills GB, this lane is free).
+// Bing direct was tried first and is NOT a fallback: from runner IPs it serves results for the first word only
+// (imdb and wikipedia for "emergency ..."), with cookies or in a browser alike.
+let ddgMisses = 0, ddgBrowser = null, ddgCtx = null;
+async function fetchDdgBrowser(query) {
+  let page = null;
   try {
-    const r = await fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}&count=15&mkt=en-US&cc=US&setlang=en-US`, {
-      headers: { 'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15', accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'accept-language': 'en-US,en;q=0.9' },
-      signal: AbortSignal.timeout(20000),
-    });
-    if (r.status !== 200) return { error: `bing ${r.status}` };
-    const html = await r.text();
-    const strip = (s) => String(s || '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim();
-    const out = [];
-    for (const b of html.split('<li class="b_algo"').slice(1, 13)) {
-      const title = strip((b.match(/<h2[^>]*>\s*<a[^>]*>([\s\S]*?)<\/a>/) || [])[1]).slice(0, 90);
-      const url = strip((b.match(/<cite[^>]*>([\s\S]*?)<\/cite>/) || [])[1]);
-      const snippet = strip((b.match(/<p[^>]*class="[^"]*b_lineclamp[^"]*"[^>]*>([\s\S]*?)<\/p>/) || b.match(/<p[^>]*>([\s\S]*?)<\/p>/) || [])[1]).slice(0, 160);
-      if (url) out.push({ title, url, snippet });
+    if (!ddgCtx) {
+      ddgBrowser = await pw.webkit.launch({ headless: true });
+      ddgCtx = await ddgBrowser.newContext({ viewport: { width: 1280, height: 900 } });
+      await ddgCtx.route('**/*', (route) => (['image', 'media', 'font', 'stylesheet'].includes(route.request().resourceType()) ? route.abort() : route.continue()));
     }
-    if (!out.length) return { error: 'bing parsed 0 results' };
-    return { source: 'bing', results: out };
+    page = await ddgCtx.newPage();
+    await page.goto(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const results = await page.evaluate(() => {
+      const o = [];
+      for (const b of document.querySelectorAll('.result')) {
+        if (b.className.includes('result--ad')) continue;
+        const a = b.querySelector('a.result__a');
+        if (!a) continue;
+        let url = a.href;
+        const m = /[?&]uddg=([^&]+)/.exec(url);
+        if (m) { try { url = decodeURIComponent(m[1]); } catch { } }
+        if (/^https?:\/\/([a-z0-9-]+\.)*duckduckgo\.com\//.test(url)) continue; // ad click-through rows
+        const sn = b.querySelector('.result__snippet');
+        o.push({ title: a.textContent.trim().slice(0, 90), url, snippet: (sn ? sn.textContent : '').replace(/\s+/g, ' ').trim().slice(0, 160) });
+        if (o.length >= 12) break;
+      }
+      return o;
+    });
+    if (!results.length) return { error: `ddg browser 0 results (${(await page.title()).slice(0, 60)})` };
+    return { source: 'ddg', results };
   } catch (e) {
-    return { error: String(e.message || e).slice(0, 200) };
+    return { error: 'ddg browser ' + String(e.message || e).slice(0, 160) };
+  } finally {
+    try { await page?.close(); } catch { }
   }
 }
 
@@ -194,17 +209,17 @@ async function main() {
   for (const query of queries) {
     let r = await fetchStartpage(query);
     if (!r.results) {
-      // Class 79 (2026-11-16): DDG answers 202 (challenge page) to every runner IP since 11/15 20:00Z, on html and
-      // lite, GET and POST. Three misses in a row and the run stops asking it; Bing direct (the index DDG serves)
-      // answers 200 from the same runners and the ingester already whitelists source "bing".
-      let fb = ddgMisses >= 3 ? { error: 'ddg skipped (3 misses this run)' } : await fetchDdg(query);
-      if (fb.results) ddgMisses = 0; else { ddgMisses++; const b = await fetchBing(query); fb = b.results ? b : { error: `${fb.error}; ${b.error}` }; }
+      // Plain fetch first (free and fast when DDG is not walling runner IPs); three misses in a row and the run stops
+      // asking that way. A miss goes to the browser fetch above.
+      let fb = ddgMisses >= 3 ? { error: 'ddg fetch skipped (3 misses this run)' } : await fetchDdg(query);
+      if (fb.results) ddgMisses = 0; else { ddgMisses++; const b = await fetchDdgBrowser(query); fb = b.results ? b : { error: `${fb.error}; ${b.error}` }; }
       r = fb.results ? fb : { ...r, ...fb };
     }
     out.push({ query, ...r });
     await new Promise(res => setTimeout(res, GAP_MS));
   }
   try { await browser?.close(); } catch { }
+  try { await ddgBrowser?.close(); } catch { }
   fs.writeFileSync('results.json', JSON.stringify(out));
   const bySrc = {};
   for (const r of out) bySrc[r.source || 'fail'] = (bySrc[r.source || 'fail'] || 0) + 1;
