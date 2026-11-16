@@ -2,8 +2,9 @@
 // array of query strings), fetches each from Startpage with one persistent
 // WebKit browser (through PROXY_URL when set — Startpage blocks Azure/GH
 // egress IPs outright, so the residential proxy provides the IP while GH
-// provides free compute), falling back to DDG's html endpoint (Bing index,
-// labeled source:"ddg" so the ingester never mistakes it for Google truth).
+// provides free compute), falling back to DDG's html endpoint, then Bing direct
+// (both the Bing index, labeled source:"ddg" / "bing" so the ingester never
+// mistakes either for Google truth).
 // Writes results.json: [{query, source, results:[{title,url,snippet}]}...].
 const fs = require('fs');
 const pw = require('playwright');
@@ -162,12 +163,42 @@ async function fetchDdg(query) {
   }
 }
 
+// Bing direct. Result hrefs are bing.com/ck/a redirects, so the row's url is the <cite> text (the server's own
+// parseBing reads the same field; normalizeDomain drops the "› crumb").
+let ddgMisses = 0;
+async function fetchBing(query) {
+  try {
+    const r = await fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}&count=15&mkt=en-US&cc=US&setlang=en-US`, {
+      headers: { 'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15', accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'accept-language': 'en-US,en;q=0.9' },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (r.status !== 200) return { error: `bing ${r.status}` };
+    const html = await r.text();
+    const strip = (s) => String(s || '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim();
+    const out = [];
+    for (const b of html.split('<li class="b_algo"').slice(1, 13)) {
+      const title = strip((b.match(/<h2[^>]*>\s*<a[^>]*>([\s\S]*?)<\/a>/) || [])[1]).slice(0, 90);
+      const url = strip((b.match(/<cite[^>]*>([\s\S]*?)<\/cite>/) || [])[1]);
+      const snippet = strip((b.match(/<p[^>]*class="[^"]*b_lineclamp[^"]*"[^>]*>([\s\S]*?)<\/p>/) || b.match(/<p[^>]*>([\s\S]*?)<\/p>/) || [])[1]).slice(0, 160);
+      if (url) out.push({ title, url, snippet });
+    }
+    if (!out.length) return { error: 'bing parsed 0 results' };
+    return { source: 'bing', results: out };
+  } catch (e) {
+    return { error: String(e.message || e).slice(0, 200) };
+  }
+}
+
 async function main() {
   const out = [];
   for (const query of queries) {
     let r = await fetchStartpage(query);
     if (!r.results) {
-      const fb = await fetchDdg(query);
+      // Class 79 (2026-11-16): DDG answers 202 (challenge page) to every runner IP since 11/15 20:00Z, on html and
+      // lite, GET and POST. Three misses in a row and the run stops asking it; Bing direct (the index DDG serves)
+      // answers 200 from the same runners and the ingester already whitelists source "bing".
+      let fb = ddgMisses >= 3 ? { error: 'ddg skipped (3 misses this run)' } : await fetchDdg(query);
+      if (fb.results) ddgMisses = 0; else { ddgMisses++; const b = await fetchBing(query); fb = b.results ? b : { error: `${fb.error}; ${b.error}` }; }
       r = fb.results ? fb : { ...r, ...fb };
     }
     out.push({ query, ...r });
