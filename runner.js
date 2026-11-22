@@ -168,7 +168,7 @@ async function fetchDdg(query) {
 // runner returns results. Its own browser so it never rides PROXY_URL (the proxy bills GB, this lane is free).
 // Bing direct was tried first and is NOT a fallback: from runner IPs it serves results for the first word only
 // (imdb and wikipedia for "emergency ..."), with cookies or in a browser alike.
-let ddgMisses = 0, ddgBrowser = null, ddgCtx = null;
+let ddgMisses = 0, ddgBrowser = null, ddgCtx = null, ddgFull = 0;
 async function fetchDdgBrowser(query) {
   let page = null;
   try {
@@ -195,8 +195,27 @@ async function fetchDdgBrowser(query) {
       }
       return o;
     });
-    if (!results.length) return { error: `ddg browser 0 results (${(await page.title()).slice(0, 60)})` };
-    return { source: 'ddg', results };
+    if (results.length) return { source: 'ddg', results };
+    // Duck challenge on the html page (class 80, 2026-11-22: "Unfortunately, bots use DuckDuckGo too", title
+    // "DuckDuckGo"). Once it shows, every later html load in the run gets it too; a fresh context and the lite page
+    // get the same wall. The full site answers the same query from the same runner, and html loads work again after it.
+    const title = (await page.title()).slice(0, 60);
+    await page.goto(`https://duckduckgo.com/?q=${encodeURIComponent(query)}&ia=web`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForSelector('article[data-testid="result"]', { timeout: 8000 }).catch(() => { });
+    const full = await page.evaluate(() => {
+      const o = [];
+      for (const b of document.querySelectorAll('article[data-testid="result"]')) {
+        const a = b.querySelector('a[data-testid="result-title-a"]');
+        if (!a || !/^https?:/.test(a.href) || /^https?:\/\/([a-z0-9-]+\.)*duckduckgo\.com\//.test(a.href)) continue;
+        const sn = b.querySelector('[data-result="snippet"]');
+        o.push({ title: a.textContent.trim().slice(0, 90), url: a.href, snippet: (sn ? sn.textContent : '').replace(/\s+/g, ' ').trim().slice(0, 160) });
+        if (o.length >= 12) break;
+      }
+      return o;
+    });
+    if (!full.length) return { error: `ddg browser 0 results (${title}); ddg full site 0 results` };
+    ddgFull++;
+    return { source: 'ddg', results: full };
   } catch (e) {
     return { error: 'ddg browser ' + String(e.message || e).slice(0, 160) };
   } finally {
@@ -223,6 +242,6 @@ async function main() {
   fs.writeFileSync('results.json', JSON.stringify(out));
   const bySrc = {};
   for (const r of out) bySrc[r.source || 'fail'] = (bySrc[r.source || 'fail'] || 0) + 1;
-  console.log('done:', JSON.stringify(bySrc));
+  console.log('done:', JSON.stringify(bySrc), 'ddgFull', ddgFull);
 }
 main().catch(e => { console.error(e); process.exit(1); });
