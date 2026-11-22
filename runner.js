@@ -196,7 +196,7 @@ async function fetchDdgBrowser(query) {
       return o;
     });
     if (results.length) return { source: 'ddg', results };
-    // Duck challenge on the html page (class 80, 2026-11-22: "Unfortunately, bots use DuckDuckGo too", title
+    // Duck challenge on the html page (class 82, 2026-11-22: "Unfortunately, bots use DuckDuckGo too", title
     // "DuckDuckGo"). Once it shows, every later html load in the run gets it too; a fresh context and the lite page
     // get the same wall. The full site answers the same query from the same runner, and html loads work again after it.
     const title = (await page.title()).slice(0, 60);
