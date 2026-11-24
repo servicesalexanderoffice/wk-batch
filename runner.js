@@ -223,25 +223,56 @@ async function fetchDdgBrowser(query) {
   }
 }
 
+// Run budget (class 84, 2026-11-24). From 14:07Z DDG walled every runner load (html and lite show the duck challenge,
+// the full site answers 202 with an empty shell, so the class 82 way out is gone). Each query then cost ~9 s of DDG
+// waits plus the gap, 75 queries ran past the workflow's 15 min timeout, the run was cancelled with no artifact and
+// the log held no line saying which fetch was slow. So: the loop stops at RUN_BUDGET_MS and writes what it has (a
+// partial artifact is ingested like a full one, the unasked queries are offered again next cycle); after 6 DDG
+// browser misses in a row the run asks DDG only on every 10th query until one lands; Startpage is dropped after 3
+// slow misses (a 35 s goto timeout on each query is the whole budget); every query prints one timing line.
+// Probed from a runner the same hour, none usable: Brave 429 after 5 queries, Mojeek 403, Qwant 403, Ecosia
+// challenge, Yahoo 500 after the first query.
+const RUN_BUDGET_MS = Number(process.env.RUN_BUDGET_MS) || 9.5 * 60 * 1000;
+const SP_SLOW_MS = 10000, SP_SLOW_MAX = 3, DDG_WALL_MAX = 6;
+let ddgWalled = 0;
 async function main() {
-  const out = [];
+  const out = [], t0 = Date.now();
+  let spSlow = 0, unasked = 0;
   for (const query of queries) {
-    let r = await fetchStartpage(query);
+    if (Date.now() - t0 > RUN_BUDGET_MS) { unasked = queries.length - out.length; break; }
+    const tq = Date.now();
+    let r = spSlow >= SP_SLOW_MAX ? { error: 'startpage skipped (3 slow misses this run)' } : await fetchStartpage(query);
+    const spMs = Date.now() - tq;
+    if (!r.results && spMs > SP_SLOW_MS) spSlow++;
     if (!r.results) {
       // Plain fetch first (free and fast when DDG is not walling runner IPs); three misses in a row and the run stops
       // asking that way. A miss goes to the browser fetch above.
       let fb = ddgMisses >= 3 ? { error: 'ddg fetch skipped (3 misses this run)' } : await fetchDdg(query);
-      if (fb.results) ddgMisses = 0; else { ddgMisses++; const b = await fetchDdgBrowser(query); fb = b.results ? b : { error: `${fb.error}; ${b.error}` }; }
+      if (fb.results) ddgMisses = 0;
+      else {
+        ddgMisses++;
+        // Six browser misses in a row and DDG is walled for this run (class 84): stop paying ~9 s a query for it,
+        // ask again on every 10th query so a lifted wall is picked up inside the run.
+        const skip = ddgWalled >= DDG_WALL_MAX && out.length % 10 !== 0;
+        const b = skip ? { error: 'ddg browser skipped (walled this run)' } : await fetchDdgBrowser(query);
+        if (b.results) ddgWalled = 0; else if (!skip) ddgWalled++;
+        fb = b.results ? b : { error: `${fb.error}; ${b.error}` };
+      }
       r = fb.results ? fb : { ...r, ...fb };
     }
     out.push({ query, ...r });
+    console.log(`q${out.length} ${r.source || 'fail'} sp=${spMs}ms total=${Date.now() - tq}ms${r.source ? '' : ' ' + String(r.error || r.blockedTitle || '').slice(0, 140)}`);
     await new Promise(res => setTimeout(res, GAP_MS));
   }
-  try { await browser?.close(); } catch { }
-  try { await ddgBrowser?.close(); } catch { }
+  // Results first: a browser close that hangs must not cost the artifact.
   fs.writeFileSync('results.json', JSON.stringify(out));
   const bySrc = {};
   for (const r of out) bySrc[r.source || 'fail'] = (bySrc[r.source || 'fail'] || 0) + 1;
-  console.log('done:', JSON.stringify(bySrc), 'ddgFull', ddgFull);
+  console.log('done:', JSON.stringify(bySrc), 'ddgFull', ddgFull, 'ddgWalled', ddgWalled >= DDG_WALL_MAX, 'unasked', unasked, 'spSlow', spSlow, 'secs', Math.round((Date.now() - t0) / 1000));
+  await Promise.race([
+    Promise.allSettled([browser?.close(), ddgBrowser?.close()]),
+    new Promise(res => setTimeout(res, 15000)),
+  ]);
+  process.exit(0);
 }
 main().catch(e => { console.error(e); process.exit(1); });
